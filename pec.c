@@ -38,7 +38,7 @@ main(int argc, char *argv[]) {
   // Parse the arguments
   // Keep track of where the file list starts...
   char nfiles = argc - 1;
-  char **files = &(argv[2]);
+  char **files = &(argv[1]);
 
   // Check for -P flag
   if ( argc > 1 && strcmp(argv[1], "-P") == 0 ) {
@@ -61,7 +61,7 @@ main(int argc, char *argv[]) {
 
     // The rest of the arguments are files
     nfiles = argc - 3;
-    files = &(argv[4]);
+    files = &(argv[3]);
   }
 
   // Special case for no files --- read standard input (though we're ignoring
@@ -74,7 +74,7 @@ main(int argc, char *argv[]) {
 
   procinfo *plist = NULL;
   int nchild = 0, fn = 0;
-  int ecounts[nfiles];
+  count_t ecounts[nfiles];
   
 
   // We don't quit until we've worked through the files and there aren't any more children to wait for...
