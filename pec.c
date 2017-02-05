@@ -8,6 +8,8 @@
 #include <errno.h>
 #include <string.h>
 
+#define BUFSIZE (16 * 1024)
+
 typedef unsigned long count_t;
 
 typedef struct procinfo {
@@ -37,22 +39,22 @@ main(int argc, char *argv[]) {
 
   // Parse the arguments
   // Keep track of where the file list starts...
-  char nfiles = argc - 1;
+  int nfiles = argc - 1;
   char **files = &(argv[1]);
 
   // Check for -P flag
   if ( argc > 1 && strcmp(argv[1], "-P") == 0 ) {
 
     // Could have nothing (or a empty arg) after -P
-    if ( argc < 3 || argv[2][1] == '\0' ) {
+    if ( argc < 3 || argv[2][0] == '\0' ) {
       usage();
     }
 
     // Convert the argument and check for errors
-    char **endptr;
-    int reqproc = strtol(argv[2], endptr, 0);
+    char *endptr;
+    int reqproc = strtol(argv[2], &endptr, 0);
 
-    if ( **endptr != '\0' || reqproc < 1 ) { // Found a bad number
+    if ( *endptr != '\0' || reqproc < 1 ) { // Found a bad number
       fprintf(stderr, "'%s' is not a valid number of processes.\n", argv[2]);
       usage();
     }
@@ -75,8 +77,11 @@ main(int argc, char *argv[]) {
   procinfo *plist = NULL;
   int nchild = 0, fn = 0;
   count_t ecounts[nfiles];
-  
 
+  for ( int i = 0 ; i < nfiles ; i++ ) {
+    ecounts[i] = 0;
+  }
+  
   // We don't quit until we've worked through the files and there aren't any more children to wait for...
   while ( fn < nfiles || nchild > 0 ) {
 
@@ -93,7 +98,11 @@ main(int argc, char *argv[]) {
       // Special case for the first on the list...
       if ( plist->pid == cpid ) {
 	ecounts[plist->fileno] = readCount(status, plist->fdout);
+	
+	void *hold = plist;
 	plist = plist->next;
+	free(hold);
+	
 	nchild = nchild - 1;
 	continue;
       }
@@ -102,7 +111,7 @@ main(int argc, char *argv[]) {
       procinfo *last = plist, *this = plist->next;
       while ( this != NULL ) {
 	if ( this->pid == cpid ) {
-	  ecounts[this->fileno] = readCount(status, plist->fdout);
+	  ecounts[this->fileno] = readCount(status, this->fdout);
 	  last->next = this->next;
 	  nchild = nchild - 1;
 	  
@@ -125,7 +134,7 @@ main(int argc, char *argv[]) {
     // Now try to start a child process (if we can)
     if ( nchild < nproc && fn < nfiles) {
 
-      // Open the file, if we can
+      // Try to open the file if we can...
       int fd;
       if ( (fd = open(files[fn], O_RDONLY)) < 0 ) {
 	// Error, so check for those that we can recover from
@@ -135,7 +144,9 @@ main(int argc, char *argv[]) {
 	}
 
 	// Not a recoverable error, so make a little message, and skip this file
-	fprintf(stderr, "%s: Can't open %s: %s", progname, files[fn], strerror(errno));
+	fprintf(stderr, "%s: %s: %s\n", progname, files[fn], strerror(errno));
+	ecounts[fn] = 0;
+	files[fn][0] = '\0';  // Used to skip the output later...
 	fn = fn + 1;
 	continue;
       }
@@ -168,9 +179,11 @@ main(int argc, char *argv[]) {
 
 	// Count up the e's
 	count_t es = count(fd);
+	close(fd);
 
 	// Write to the pipe, if we can
 	if ( write(fifo[1], &es, sizeof(count_t)) != sizeof(count_t) ) {
+	  close(fifo[1]);
 	  exit(EXIT_FAILURE);
 	}
 
@@ -189,16 +202,29 @@ main(int argc, char *argv[]) {
       new->pid = pid;
       new->fdout = fifo[0];
       new->fileno = fn;
+
+      // Add to the list
       new->next = plist;
       plist = new;
+
+      // Increase the child count
+      nchild = nchild + 1;
 
       // Move on to the next file...
       fn = fn + 1;
     }
   }
 
+  count_t total = 0;
   for ( fn = 0 ; fn < nfiles ; fn++ ) {
-    printf("%10d %s\n", ecounts[fn], files[fn]);
+    if ( files[fn][0] != '\0' ) {
+      printf("%10lu %s\n", ecounts[fn], files[fn]);
+      total += ecounts[fn];
+    }
+  }
+
+  if ( nfiles > 1 ) {
+    printf("%10lu total\n", total);
   }
 
   exit(EXIT_SUCCESS);
@@ -206,12 +232,21 @@ main(int argc, char *argv[]) {
 
 // Count the 'e's in fd
 count_t count(int fd) {
-  char buf;
+  char buf[BUFSIZE + 1];
   int ecount = 0;
-  
-  while ( read(fd, &buf, 1) > 0 ) {
-    if ( buf == 'e' ) {
-      ecount++;
+
+  // Let the kernel know how we'll be using the data...
+  posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL | POSIX_FADV_NOREUSE);
+
+  int bytes_read;
+
+  while ( (bytes_read = read(fd, buf, BUFSIZE)) > 0 ) {
+    
+    char *p = buf;
+    char *end = p + bytes_read;
+    
+    while ( p != end ) {
+      ecount += *p++ == 'e';
     }
   }
 
@@ -222,7 +257,7 @@ count_t count(int fd) {
 // Get the count from the stream and close it...
 count_t readCount(int status, int fd) {
   count_t retval = 0;
-  
+
   if ( status != EXIT_SUCCESS ) {
     retval = 0;
   }
