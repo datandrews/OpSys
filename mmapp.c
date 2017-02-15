@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <semaphore.h>
 #include <errno.h>
+#include <sys/shm.h>
 
 int
 main(int argc, char *argv[]) {
@@ -54,13 +55,29 @@ main(int argc, char *argv[]) {
 
   sem_t mutex;
   if ( sem_init(&mutex, 1, 1) < 0 ) {
+    // Can't make a semaphore
     perror("Semaphore initialzation");
     exit(EXIT_FAILURE);
   }
+  
+  // Create memory to be shared...
+  int eshm = shmget(IPC_PRIVATE, sizeof(int), 0700 | IPC_CREAT);
+  if ( eshm < 0 ) {
+    // Can't make shared memory
+    perror("Shared memory allocation");
+    exit(EXIT_FAILURE);
+  }
 
-  // The ultimate count
-  int *etotal = (int *) calloc(1, sizeof(int));
+  // Attached the shared memory segment
+  int *etotal = (int *) shmat(eshm, NULL, 0);
+  if ( etotal == (void *) -1 ) {
+    perror("Shared memory attachment");
+    exit(EXIT_FAILURE);
+  }
 
+  // Initialize the count...
+  *etotal = 0;
+      
   // Divy up the work between the processes...
   int bytesperproc = fs.st_size / nproc + 1;
 
@@ -86,12 +103,12 @@ main(int argc, char *argv[]) {
 	end = mp + fs.st_size;
       }
 
-      printf("Started child %d. Working from %p to %p...\n", p, (void *) cur, (void *) end);
+      //      printf("Started child %d. Working from %p to %p...\n", p, (void *) cur, (void *) end);
 
       while ( cur != end )
 	ecount += *cur++ == 'e';
 
-      printf("Child %d read %d e's\n", p, ecount);
+      //      printf("Child %d read %d e's\n", p, ecount);
 
       // The total count is a shared resource, so coordinate among the children...
       sem_wait(&mutex);
@@ -107,7 +124,7 @@ main(int argc, char *argv[]) {
 
   while ( wait(&retval) > 0 ) {
     if ( retval != EXIT_SUCCESS ) {
-      fprintf(stderr, "A child ended with exit value = %d. Report count of 0.\n", retval);
+      fprintf(stderr, "A child ended with exit value = %d. Report count set to 0.\n", retval);
       continue;
     }
   }
